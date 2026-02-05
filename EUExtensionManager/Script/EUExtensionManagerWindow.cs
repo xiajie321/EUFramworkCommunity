@@ -59,9 +59,13 @@ namespace EUFarmworker.ExtensionManager
 
         public void CreateGUI()
         {
-            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/EUFarmworker/Extension/EUExtensionManager/ConfigPanel/EUExtensionManager.uss");
+            var styleSheet = LoadStyleSheet();
             VisualElement root = rootVisualElement;
-            root.styleSheets.Add(styleSheet);
+            if (styleSheet != null)
+                root.styleSheets.Add(styleSheet);
+            else
+                Debug.LogError("[EUExtensionManager] 无法找到样式文件 EUExtensionManager.uss，请确保文件存在于项目中。");
+            
             root.AddToClassList("root-container");
 
             // 1. 左侧侧边栏
@@ -191,7 +195,7 @@ namespace EUFarmworker.ExtensionManager
             m_ExtensionListView.fixedItemHeight = 72; // 更高的列表项
             m_ExtensionListView.makeItem = MakeListItem;
             m_ExtensionListView.bindItem = BindListItem;
-            m_ExtensionListView.onSelectionChange += OnSelectionChanged;
+            m_ExtensionListView.selectionChanged += OnSelectionChanged;
             splitView.Add(m_ExtensionListView);
 
             // Detail View
@@ -539,18 +543,20 @@ namespace EUFarmworker.ExtensionManager
             // 2. Sort
             if (m_CurrentSort == "名称")
             {
-                m_FilteredExtensions = filtered.OrderBy(e => e.displayName).ToList();
+                m_FilteredExtensions = filtered.OrderByDescending(e => e.name == "com.eu.extension-manager") // Manager first
+                                              .ThenBy(e => e.displayName).ToList();
             }
             else // 状态
             {
                 // Sort by update available (if installed) or just name
-                m_FilteredExtensions = filtered.OrderByDescending(e => {
-                    // Logic to put updates on top
-                    if (m_ShowRemote) return false; // In remote view, maybe sort by date if available?
-                    // In local view, check if update available
-                    var remote = m_RemoteExtensions?.FirstOrDefault(r => r.name == e.name);
-                    return remote != null && IsVersionNewer(remote.version, e.version);
-                }).ThenBy(e => e.displayName).ToList();
+                m_FilteredExtensions = filtered.OrderByDescending(e => e.name == "com.eu.extension-manager") // Manager first
+                                              .ThenByDescending(e => {
+                                                  // Logic to put updates on top
+                                                  if (m_ShowRemote) return false; // In remote view, maybe sort by date if available?
+                                                  // In local view, check if update available
+                                                  var remote = m_RemoteExtensions?.FirstOrDefault(r => r.name == e.name);
+                                                  return remote != null && IsVersionNewer(remote.version, e.version);
+                                              }).ThenBy(e => e.displayName).ToList();
             }
 
             m_ExtensionListView.itemsSource = m_FilteredExtensions;
@@ -675,12 +681,19 @@ namespace EUFarmworker.ExtensionManager
                 actionBar.Add(CreateActionButton("文档", "btn-secondary", () => EUExtensionLoader.OpenDocumentation(localInfo)));
                 actionBar.Add(CreateActionButton("定位", "btn-secondary", () => EditorUtility.RevealInFinder(localInfo.folderPath)));
                 
-                Button unBtn = CreateActionButton("卸载", "btn-danger", () => {
-                    if (m_IsProcessing) return;
-                    if (EditorUtility.DisplayDialog("卸载", "确定卸载吗？", "确定", "取消")) { EUExtensionLoader.Uninstall(localInfo); RefreshList(); }
-                });
-                if (m_IsProcessing) unBtn.SetEnabled(false);
-                actionBar.Add(unBtn);
+                // 管理器自身不允许卸载 (通过包名判断，假设包名为 com.eu.extension-manager)
+                // 也可以结合 category 判断，这里使用包名检查更准确
+                bool isSelf = localInfo.name == "com.eu.extension-manager";
+                
+                if (!isSelf)
+                {
+                    Button unBtn = CreateActionButton("卸载", "btn-danger", () => {
+                        if (m_IsProcessing) return;
+                        if (EditorUtility.DisplayDialog("卸载", "确定卸载吗？", "确定", "取消")) { EUExtensionLoader.Uninstall(localInfo); RefreshList(); }
+                    });
+                    if (m_IsProcessing) unBtn.SetEnabled(false);
+                    actionBar.Add(unBtn);
+                }
             }
             else
             {
@@ -838,6 +851,30 @@ namespace EUFarmworker.ExtensionManager
                 content.Add(empty); 
             }
         }
+
+        private StyleSheet LoadStyleSheet()
+        {
+            // 1. 尝试通过 GUID 查找（最稳健）
+            string[] guids = AssetDatabase.FindAssets("EUExtensionManager t:StyleSheet");
+            if (guids.Length > 0)
+            {
+                // 可能会有多个同名文件，优先匹配路径中包含 ConfigPanel 的
+                foreach (var guid in guids)
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (path.EndsWith("ConfigPanel/EUExtensionManager.uss"))
+                    {
+                        return AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
+                    }
+                }
+                // 如果没有完全匹配的，返回第一个找到的
+                return AssetDatabase.LoadAssetAtPath<StyleSheet>(AssetDatabase.GUIDToAssetPath(guids[0]));
+            }
+
+            // 2. 回退到默认路径
+            string defaultPath = "Assets/EUFarmworker/Extension/EUExtensionManager/ConfigPanel/EUExtensionManager.uss";
+            return AssetDatabase.LoadAssetAtPath<StyleSheet>(defaultPath);
+        }
     }
 
     public class EUExtensionSettingsWindow : EditorWindow
@@ -859,9 +896,14 @@ namespace EUFarmworker.ExtensionManager
 
         public void CreateGUI()
         {
-            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/EUFarmworker/Extension/EUExtensionManager/ConfigPanel/EUExtensionManager.uss");
+            // 使用相同的方式加载 StyleSheet，确保兼容不同路径
+            var styleSheet = LoadStyleSheet();
             VisualElement root = rootVisualElement;
-            root.styleSheets.Add(styleSheet);
+            if (styleSheet != null)
+                root.styleSheets.Add(styleSheet);
+            else
+                Debug.LogError("[EUExtensionSettingsWindow] 无法找到样式文件 EUExtensionManager.uss，请确保文件存在于项目中。");
+
             root.AddToClassList("settings-window");
 
             // Scrollable Content
@@ -1045,6 +1087,30 @@ namespace EUFarmworker.ExtensionManager
         private void OnDestroy()
         {
             m_OnClose?.Invoke();
+        }
+
+        private StyleSheet LoadStyleSheet()
+        {
+            // 1. 尝试通过 GUID 查找（最稳健）
+            string[] guids = AssetDatabase.FindAssets("EUExtensionManager t:StyleSheet");
+            if (guids.Length > 0)
+            {
+                // 可能会有多个同名文件，优先匹配路径中包含 ConfigPanel 的
+                foreach (var guid in guids)
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (path.EndsWith("ConfigPanel/EUExtensionManager.uss"))
+                    {
+                        return AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
+                    }
+                }
+                // 如果没有完全匹配的，返回第一个找到的
+                return AssetDatabase.LoadAssetAtPath<StyleSheet>(AssetDatabase.GUIDToAssetPath(guids[0]));
+            }
+
+            // 2. 回退到默认路径
+            string defaultPath = "Assets/EUFarmworker/Extension/EUExtensionManager/ConfigPanel/EUExtensionManager.uss";
+            return AssetDatabase.LoadAssetAtPath<StyleSheet>(defaultPath);
         }
     }
 

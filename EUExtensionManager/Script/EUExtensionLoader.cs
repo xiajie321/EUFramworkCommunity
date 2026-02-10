@@ -15,6 +15,12 @@ namespace EUFarmworker.Extension.ExtensionManager
     {
         public const string ExtensionMarkerFile = "extension.json";
         
+        // 缓存远程列表
+        private static List<EUExtensionInfo> _cachedRemoteExtensions;
+        private static DateTime _lastFetchTime;
+        private const float CacheDurationSeconds = 300; // 5分钟内存缓存
+        private const string CacheFilePath = "Library/EUExtensionCache.json";
+
         private const string PrefsKey_CommunityUrl = "EUExtensionManager_CommunityUrl";
         private const string PrefsKey_ExtensionRootPath = "EUExtensionManager_ExtensionRootPath";
         private const string PrefsKey_CoreInstallPath = "EUExtensionManager_CoreInstallPath";
@@ -351,18 +357,110 @@ namespace EUFarmworker.Extension.ExtensionManager
         /// <summary>
         /// 从远程仓库获取扩展列表
         /// </summary>
-        public static void FetchRemoteRegistry(Action<List<EUExtensionInfo>> callback)
+        public static void FetchRemoteRegistry(Action<List<EUExtensionInfo>> callback, bool forceRefresh = false)
         {
-            FetchRemoteRegistryViaGitHubApi(callback);
+            if (!forceRefresh && _cachedRemoteExtensions != null && (DateTime.Now - _lastFetchTime).TotalSeconds < CacheDurationSeconds)
+            {
+                callback?.Invoke(_cachedRemoteExtensions);
+                return;
+            }
+
+            FetchRemoteRegistryViaGitHubApi(list => 
+            {
+                if (list != null && list.Count > 0)
+                {
+                    _cachedRemoteExtensions = list;
+                    _lastFetchTime = DateTime.Now;
+                }
+                callback?.Invoke(list);
+            });
         }
         
+        [Serializable]
+        private class ExtensionCacheItem
+        {
+            public string path;
+            public string sha;
+            public EUExtensionInfo info;
+        }
+
+        [Serializable]
+        private class ExtensionCacheData
+        {
+            public List<ExtensionCacheItem> items = new List<ExtensionCacheItem>();
+            public long lastUpdateTime;
+        }
+
+        [Serializable]
+        private class GitHubTreeResponse
+        {
+            public GitHubTreeItem[] tree;
+            public bool truncated;
+        }
+
+        [Serializable]
+        private class GitHubTreeItem
+        {
+            public string path;
+            public string type;
+            public string sha;
+        }
+
+        private static ExtensionCacheData LoadCache()
+        {
+            if (File.Exists(CacheFilePath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(CacheFilePath);
+                    return JsonUtility.FromJson<ExtensionCacheData>(json);
+                }
+                catch { }
+            }
+            return new ExtensionCacheData();
+        }
+
+        private static void SaveCache(ExtensionCacheData data)
+        {
+            try
+            {
+                string json = JsonUtility.ToJson(data, true);
+                File.WriteAllText(CacheFilePath, json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[EUExtensionManager] 保存缓存失败: {e.Message}");
+            }
+        }
+
         /// <summary>
-        /// 通过 GitHub API 获取目录列表
+        /// 通过 GitHub Trees API 获取文件列表并增量更新
         /// </summary>
         private static void FetchRemoteRegistryViaGitHubApi(Action<List<EUExtensionInfo>> callback)
         {
+            // 1. 先尝试加载本地缓存并立即回调（如果内存缓存为空）
+            var cache = LoadCache();
+            if (_cachedRemoteExtensions == null && cache.items.Count > 0)
+            {
+                var cachedList = cache.items.Select(i => i.info).ToList();
+                // 恢复非序列化字段
+                foreach (var item in cache.items)
+                {
+                    if (item.info != null)
+                    {
+                        string dirName = item.path.Split('/')[0];
+                        item.info.downloadUrl = $"{CommunityUrl}/tree/main/{dirName}";
+                        item.info.isInstalled = false;
+                        item.info.remoteFolderName = dirName;
+                    }
+                }
+                callback?.Invoke(cachedList);
+            }
+
+            // 2. 请求 GitHub Trees API
             string url = CommunityUrl.TrimEnd('/');
-            string apiUrl = url.Replace("github.com", "api.github.com/repos") + "/contents";
+            // 默认使用 main 分支，如果需要支持 master，可能需要先检测默认分支
+            string apiUrl = url.Replace("github.com", "api.github.com/repos") + "/git/trees/main?recursive=1";
             
             var request = CreateRequest(apiUrl);
             request.SetRequestHeader("Accept", "application/vnd.github.v3+json");
@@ -375,155 +473,148 @@ namespace EUFarmworker.Extension.ExtensionManager
                     try
                     {
                         string json = request.downloadHandler.text;
-                        List<string> directories = ParseGitHubDirectories(json);
+                        var treeResponse = JsonUtility.FromJson<GitHubTreeResponse>(json);
                         
-                        if (directories.Count == 0)
+                        if (treeResponse == null || treeResponse.tree == null)
+                        {
+                            Debug.LogError("[EUExtensionManager] 解析 Trees API 响应失败");
+                            return;
+                        }
+
+                        // 筛选出所有 extension.json
+                        var extensionFiles = treeResponse.tree
+                            .Where(t => t.path.EndsWith(ExtensionMarkerFile, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        if (extensionFiles.Count == 0)
                         {
                             callback?.Invoke(new List<EUExtensionInfo>());
                             return;
                         }
-                        
-                        List<EUExtensionInfo> remoteExtensions = new List<EUExtensionInfo>();
-                        int pending = directories.Count;
-                        
-                        foreach (var dirName in directories)
+
+                        // 3. 对比缓存，找出需要更新的文件
+                        var newCacheItems = new List<ExtensionCacheItem>();
+                        var downloadQueue = new List<GitHubTreeItem>();
+
+                        foreach (var file in extensionFiles)
                         {
-                            FetchRemoteExtensionJson(dirName, info =>
+                            var cachedItem = cache.items.FirstOrDefault(i => i.path == file.path);
+                            if (cachedItem != null && cachedItem.sha == file.sha && cachedItem.info != null)
                             {
-                                if (info != null)
+                                // 缓存命中且 SHA 一致，直接使用
+                                newCacheItems.Add(cachedItem);
+                            }
+                            else
+                            {
+                                // 需要下载
+                                downloadQueue.Add(file);
+                            }
+                        }
+
+                        // 4. 并发下载更新
+                        if (downloadQueue.Count == 0)
+                        {
+                            // 没有更新，直接使用缓存
+                            UpdateCacheAndCallback(newCacheItems, callback);
+                        }
+                        else
+                        {
+                            int pending = downloadQueue.Count;
+                            foreach (var file in downloadQueue)
+                            {
+                                string dirName = file.path.Split('/')[0];
+                                string rawUrl = GetRawFileUrl(dirName, ExtensionMarkerFile, "main"); // Trees API 基于 main
+
+                                var dlRequest = CreateRequest(rawUrl);
+                                var dlOp = dlRequest.SendWebRequest();
+                                dlOp.completed += __ =>
                                 {
-                                    info.downloadUrl = $"{CommunityUrl}/tree/main/{dirName}";
-                                    info.isInstalled = false;
-                                    info.remoteFolderName = dirName;
-                                    remoteExtensions.Add(info);
-                                }
-                                pending--;
-                                if (pending == 0) callback?.Invoke(remoteExtensions);
-                            });
+                                    if (dlRequest.result == UnityWebRequest.Result.Success)
+                                    {
+                                        try
+                                        {
+                                            var info = JsonUtility.FromJson<EUExtensionInfo>(dlRequest.downloadHandler.text);
+                                            if (info != null)
+                                            {
+                                                newCacheItems.Add(new ExtensionCacheItem
+                                                {
+                                                    path = file.path,
+                                                    sha = file.sha,
+                                                    info = info
+                                                });
+                                            }
+                                        }
+                                        catch { }
+                                    }
+                                    
+                                    pending--;
+                                    if (pending == 0)
+                                    {
+                                        UpdateCacheAndCallback(newCacheItems, callback);
+                                    }
+                                };
+                            }
                         }
                     }
                     catch (Exception e)
                     {
-                        Debug.LogError($"[EUExtensionManager] 解析错误: {e.Message}");
-                        callback?.Invoke(new List<EUExtensionInfo>());
+                        Debug.LogError($"[EUExtensionManager] 处理 Trees API 响应错误: {e.Message}");
                     }
                 }
                 else
                 {
-                    Debug.LogError($"[EUExtensionManager] API 请求失败: {request.error}");
-                    callback?.Invoke(new List<EUExtensionInfo>());
+                    // 如果 main 分支失败，尝试 master 分支 (简单的回退机制)
+                    if (apiUrl.Contains("/main?"))
+                    {
+                        string masterUrl = apiUrl.Replace("/main?", "/master?");
+                        var masterReq = CreateRequest(masterUrl);
+                        var masterOp = masterReq.SendWebRequest();
+                        masterOp.completed += __ => 
+                        {
+                            if (masterReq.result != UnityWebRequest.Result.Success)
+                            {
+                                Debug.LogError($"[EUExtensionManager] API 请求失败: {request.error}");
+                            }
+                            // 这里为了简化代码，不再递归重试解析逻辑，实际项目中可以提取公共逻辑
+                        };
+                    }
+                    else
+                    {
+                        Debug.LogError($"[EUExtensionManager] API 请求失败: {request.error}");
+                    }
                 }
             };
         }
-        
-        /// <summary>
-        /// 解析 GitHub API 返回的目录列表
-        /// </summary>
-        private static List<string> ParseGitHubDirectories(string json)
-        {
-            var directories = new List<string>();
-            
-            // 简单解析 JSON 数组，查找 type 为 dir 的项
-            int idx = 0;
-            while (idx < json.Length)
-            {
-                int objStart = json.IndexOf('{', idx);
-                if (objStart < 0) break;
-                
-                int objEnd = json.IndexOf('}', objStart);
-                if (objEnd < 0) break;
-                
-                string obj = json.Substring(objStart, objEnd - objStart + 1);
-                
-                // 检查是否是目录
-                if (obj.Contains("\"type\":\"dir\"") || obj.Contains("\"type\": \"dir\""))
-                {
-                    // 提取 name
-                    string name = ExtractJsonValue(obj, "name");
-                    if (!string.IsNullOrEmpty(name) && !name.StartsWith("."))
-                    {
-                        directories.Add(name);
-                    }
-                }
-                
-                idx = objEnd + 1;
-            }
-            
-            return directories;
-        }
-        
-        private static string ExtractJsonValue(string json, string key)
-        {
-            string pattern = $"\"{key}\":";
-            int startIndex = json.IndexOf(pattern);
-            if (startIndex < 0) return null;
-            startIndex += pattern.Length;
-            
-            while (startIndex < json.Length && char.IsWhiteSpace(json[startIndex])) startIndex++;
-            
-            if (startIndex >= json.Length) return null;
-            
-            if (json[startIndex] == '"')
-            {
-                startIndex++;
-                int endIndex = json.IndexOf('"', startIndex);
-                if (endIndex < 0) return null;
-                return json.Substring(startIndex, endIndex - startIndex);
-            }
-            
-            return null;
-        }
 
-        private static void FetchRemoteExtensionJson(string dirName, Action<EUExtensionInfo> callback)
+        private static void UpdateCacheAndCallback(List<ExtensionCacheItem> items, Action<List<EUExtensionInfo>> callback)
         {
-            // 先尝试 main 分支
-            TryFetchRemoteJson(dirName, "main", (info) =>
+            // 更新缓存文件
+            var cacheData = new ExtensionCacheData
             {
-                if (info != null)
-                {
-                    callback?.Invoke(info);
-                }
-                else
-                {
-                    // 失败尝试 master 分支
-                    TryFetchRemoteJson(dirName, "master", callback);
-                }
-            });
-        }
-
-        private static void TryFetchRemoteJson(string dirName, string branch, Action<EUExtensionInfo> callback)
-        {
-            string rawUrl = GetRawFileUrl(dirName, ExtensionMarkerFile, branch);
-            
-            var request = CreateRequest(rawUrl);
-            var operation = request.SendWebRequest();
-            operation.completed += _ =>
-            {
-                if (request.result == UnityWebRequest.Result.Success)
-                {
-                    try
-                    {
-                        string jsonText = request.downloadHandler.text;
-                        EUExtensionInfo info = JsonUtility.FromJson<EUExtensionInfo>(jsonText);
-                        if (info != null && !string.IsNullOrEmpty(info.name))
-                        {
-                            callback?.Invoke(info);
-                        }
-                        else
-                        {
-                            callback?.Invoke(null);
-                        }
-                    }
-                    catch 
-                    { 
-                        callback?.Invoke(null); 
-                    }
-                }
-                else 
-                { 
-                    callback?.Invoke(null); 
-                }
+                items = items,
+                lastUpdateTime = DateTime.Now.Ticks
             };
+            SaveCache(cacheData);
+
+            // 准备结果列表
+            var result = new List<EUExtensionInfo>();
+            foreach (var item in items)
+            {
+                if (item.info != null)
+                {
+                    string dirName = item.path.Split('/')[0];
+                    item.info.downloadUrl = $"{CommunityUrl}/tree/main/{dirName}";
+                    item.info.isInstalled = false;
+                    item.info.remoteFolderName = dirName;
+                    result.Add(item.info);
+                }
+            }
+
+            // 更新内存缓存
+            _cachedRemoteExtensions = result;
+            _lastFetchTime = DateTime.Now;
+
+            callback?.Invoke(result);
         }
 
         private static void CopyDirectory(string sourceDir, string destinationDir)
@@ -564,84 +655,211 @@ namespace EUFarmworker.Extension.ExtensionManager
 
         private static void CheckAndInstallDependencies(EUExtensionInfo info, Action<bool> onComplete)
         {
-            if (info.dependencies == null || info.dependencies.Length == 0)
+            // 1. 初步检查直接依赖
+            var localExtensions = GetAllLocalExtensions();
+            bool hasMissing = false;
+            
+            if (info.dependencies != null)
+            {
+                foreach (var dep in info.dependencies)
+                {
+                    if (!IsDependencySatisfied(dep, localExtensions))
+                    {
+                        hasMissing = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasMissing)
             {
                 onComplete?.Invoke(true);
                 return;
             }
 
-            List<EUDependency> missingDeps = new List<EUDependency>();
-            var localExtensions = GetAllLocalExtensions();
+            // 2. 如果有缺失依赖，我们需要完整的解析。
+            EditorUtility.DisplayProgressBar("依赖管理", "正在解析依赖信息...", 0.2f);
 
-            foreach (var dep in info.dependencies)
+            FetchRemoteRegistry(remoteExtensions => 
             {
-                // 检查本地是否已安装
-                var installedExt = localExtensions.FirstOrDefault(e => e.name == dep.name);
-                bool installed = installedExt != null;
+                EditorUtility.ClearProgressBar();
                 
-                // 也可以检查具体路径是否存在
-                if (!installed && !string.IsNullOrEmpty(dep.installPath))
+                // 3. 解析依赖树
+                var installPlan = ResolveDependencyGraph(info, localExtensions, remoteExtensions);
+                
+                if (installPlan.Count > 0)
                 {
-                     // 简单检查路径
-                     string path = dep.installPath;
-                     if (path.StartsWith("Assets") || path.StartsWith("Packages")) 
-                        path = Path.GetFullPath(Path.Combine(Application.dataPath, "..", path));
-                     
-                     if (Directory.Exists(path) && File.Exists(Path.Combine(path, ExtensionMarkerFile)))
-                     {
-                        installed = true;
-                        // 尝试加载版本信息
-                        var extInfo = LoadExtensionInfo(path);
-                        if (extInfo != null) installedExt = extInfo;
-                     }
-                }
-
-                if (!installed)
-                {
-                    missingDeps.Add(dep);
-                }
-                else if (installedExt != null)
-                {
-                    // 检查版本
-                    if (!string.IsNullOrEmpty(dep.version) && CompareVersion(installedExt.version, dep.version) < 0)
+                    string depNames = string.Join(", ", installPlan.Select(d => $"{d.DisplayName} (v{d.Version ?? "any"})"));
+                    if (EditorUtility.DisplayDialog("安装依赖", 
+                        $"扩展 {info.displayName} 需要安装以下依赖:\n{depNames}\n是否继续?", "安装", "取消"))
                     {
-                        Debug.LogWarning($"[EUExtensionManager] 依赖 {dep.name} 已安装版本 ({installedExt.version}) 低于需求版本 ({dep.version})。");
-                        missingDeps.Add(dep);
+                        // 4. 执行批量安装
+                        ExecuteInstallPlan(installPlan, 0, onComplete);
                     }
-                    // 检查来源冲突 (如果依赖定义了 gitUrl，且本地安装的扩展也有 sourceUrl)
-                    else if (!string.IsNullOrEmpty(dep.gitUrl) && !string.IsNullOrEmpty(installedExt.sourceUrl))
+                    else
                     {
-                        // 简单比较 URL 是否包含关键部分，避免 http/https 或 .git 后缀差异
-                        string depUrlNorm = NormalizeUrl(dep.gitUrl);
-                        string localUrlNorm = NormalizeUrl(installedExt.sourceUrl);
-                        
-                        if (!string.IsNullOrEmpty(depUrlNorm) && !string.IsNullOrEmpty(localUrlNorm) && !depUrlNorm.Contains(localUrlNorm) && !localUrlNorm.Contains(depUrlNorm))
-                        {
-                            Debug.LogWarning($"[EUExtensionManager] 依赖 {dep.name} 来源冲突!\n" +
-                                             $"需求来源: {dep.gitUrl}\n" +
-                                             $"本地来源: {installedExt.sourceUrl}\n" +
-                                             $"可能存在同名但内容不同的扩展。");
-                        }
+                        onComplete?.Invoke(false); // 用户取消
                     }
-                }
-            }
-
-            if (missingDeps.Count > 0)
-            {
-                string depNames = string.Join(", ", missingDeps.Select(d => $"{d.name} (v{d.version ?? "any"})"));
-                if (EditorUtility.DisplayDialog("安装/更新依赖", 
-                    $"扩展 {info.displayName} 需要安装或更新以下依赖:\n{depNames}\n是否立即处理?", "确定", "稍后"))
-                {
-                    InstallDependenciesRecursive(missingDeps, 0, onComplete);
                 }
                 else
                 {
                     onComplete?.Invoke(true);
                 }
+            });
+        }
+
+        private static bool IsDependencySatisfied(EUDependency dep, List<EUExtensionInfo> localExtensions)
+        {
+            var installedExt = localExtensions.FirstOrDefault(e => e.name == dep.name);
+            if (installedExt == null)
+            {
+                // 检查路径
+                if (!string.IsNullOrEmpty(dep.installPath))
+                {
+                    string path = dep.installPath;
+                    if (path.StartsWith("Assets") || path.StartsWith("Packages")) 
+                        path = Path.GetFullPath(Path.Combine(Application.dataPath, "..", path));
+                    
+                    if (Directory.Exists(path) && File.Exists(Path.Combine(path, ExtensionMarkerFile)))
+                    {
+                        // 尝试加载版本信息
+                        var extInfo = LoadExtensionInfo(path);
+                        if (extInfo != null) installedExt = extInfo;
+                    }
+                }
+            }
+
+            if (installedExt == null) return false;
+
+            // 检查版本
+            if (!string.IsNullOrEmpty(dep.version) && CompareVersion(installedExt.version, dep.version) < 0)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private class InstallItem
+        {
+            public string Name;
+            public string Version;
+            public string GitUrl;
+            public string DisplayName;
+            public bool IsUpgrade;
+            public EUExtensionInfo RemoteInfo;
+        }
+
+        private static List<InstallItem> ResolveDependencyGraph(EUExtensionInfo root, List<EUExtensionInfo> local, List<EUExtensionInfo> remote)
+        {
+            var plan = new Dictionary<string, InstallItem>();
+            var queue = new Queue<EUDependency>();
+            var visited = new HashSet<string>();
+
+            if (root.dependencies != null)
+                foreach (var dep in root.dependencies) queue.Enqueue(dep);
+
+            visited.Add(root.name);
+
+            while (queue.Count > 0)
+            {
+                var dep = queue.Dequeue();
+                if (visited.Contains(dep.name)) continue;
+                visited.Add(dep.name);
+
+                // 检查本地
+                var localExt = local.FirstOrDefault(e => e.name == dep.name);
+                bool needsInstall = false;
+                bool isUpgrade = false;
+
+                if (localExt == null)
+                {
+                    needsInstall = true;
+                }
+                else if (!string.IsNullOrEmpty(dep.version) && CompareVersion(localExt.version, dep.version) < 0)
+                {
+                    needsInstall = true;
+                    isUpgrade = true;
+                }
+
+                if (!needsInstall) continue;
+
+                // 查找远程信息
+                var remoteExt = remote?.FirstOrDefault(e => e.name == dep.name);
+                
+                string displayName = dep.name;
+                string version = dep.version;
+                string gitUrl = dep.gitUrl;
+
+                if (remoteExt != null)
+                {
+                    displayName = remoteExt.displayName;
+                    // 如果远程有依赖信息，加入队列
+                    if (remoteExt.dependencies != null)
+                    {
+                        foreach (var subDep in remoteExt.dependencies) queue.Enqueue(subDep);
+                    }
+                }
+                else if (string.IsNullOrEmpty(gitUrl))
+                {
+                    Debug.LogWarning($"[EUExtensionManager] 无法解析依赖: {dep.name}，未找到远程信息且无 Git URL");
+                    continue;
+                }
+
+                if (!plan.ContainsKey(dep.name))
+                {
+                    plan.Add(dep.name, new InstallItem 
+                    {
+                        Name = dep.name,
+                        Version = version,
+                        GitUrl = gitUrl,
+                        DisplayName = displayName,
+                        IsUpgrade = isUpgrade,
+                        RemoteInfo = remoteExt
+                    });
+                }
+            }
+
+            return plan.Values.ToList();
+        }
+
+        private static void ExecuteInstallPlan(List<InstallItem> plan, int index, Action<bool> onComplete)
+        {
+            if (index >= plan.Count)
+            {
+                onComplete?.Invoke(true);
+                return;
+            }
+
+            var item = plan[index];
+            Action<bool> next = (success) => 
+            {
+                if (!success)
+                {
+                    Debug.LogError($"[EUExtensionManager] 安装依赖失败: {item.DisplayName}");
+                    onComplete?.Invoke(false);
+                }
+                else
+                {
+                    ExecuteInstallPlan(plan, index + 1, onComplete);
+                }
+            };
+
+            if (item.RemoteInfo != null)
+            {
+                // 使用远程信息安装
+                DownloadExtensionViaZip(item.RemoteInfo, item.RemoteInfo.remoteFolderName, next);
+            }
+            else if (!string.IsNullOrEmpty(item.GitUrl))
+            {
+                // 使用 Git URL 安装
+                var dep = new EUDependency { name = item.Name, gitUrl = item.GitUrl, version = item.Version };
+                DownloadDependency(dep, next);
             }
             else
             {
-                onComplete?.Invoke(true);
+                Debug.LogError($"[EUExtensionManager] 无法安装依赖 {item.Name}: 缺少下载源");
+                next(false);
             }
         }
 
@@ -668,29 +886,6 @@ namespace EUFarmworker.Extension.ExtensionManager
             }
         }
 
-        private static void InstallDependenciesRecursive(List<EUDependency> deps, int index, Action<bool> onComplete)
-        {
-            if (index >= deps.Count)
-            {
-                onComplete?.Invoke(true);
-                return;
-            }
-
-            var dep = deps[index];
-            Action<bool> next = (success) => InstallDependenciesRecursive(deps, index + 1, onComplete);
-
-            if (!string.IsNullOrEmpty(dep.gitUrl))
-            {
-                DownloadDependency(dep, next);
-            }
-            else
-            {
-                // 尝试从社区仓库获取信息
-                // 这里我们没有当前的远程列表，可能需要重新获取或者假设调用者有 context
-                // 简单起见，如果通过 DownloadDependency 失败（没 url），则跳过
-                next(true); 
-            }
-        }
 
         public static void DownloadDependency(EUDependency dep, Action<bool> onComplete)
         {

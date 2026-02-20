@@ -227,11 +227,11 @@ namespace EUFramework.Extension.MarkdownDocManagerKit.Editor
             string[] guids = AssetDatabase.FindAssets("EUMarkdownDocReader t:StyleSheet");
             if (guids.Length > 0)
             {
-                // 可能会有多个同名文件，优先匹配路径中包含 ConfigPanel 的
+                // 优先加载 Editor 目录下的
                 foreach (var guid in guids)
                 {
                     string path = AssetDatabase.GUIDToAssetPath(guid);
-                    if (path.EndsWith("ConfigPanel/EUMarkdownDocReader.uss"))
+                    if (path.EndsWith("Editor/EUMarkdownDocReader.uss"))
                     {
                         var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                         if (styleSheet != null)
@@ -241,7 +241,8 @@ namespace EUFramework.Extension.MarkdownDocManagerKit.Editor
                         }
                     }
                 }
-                // 如果没有完全匹配的，尝试加载第一个找到的
+                
+                // 如果没有匹配 Editor 目录的，加载第一个找到的
                 var firstStyleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(AssetDatabase.GUIDToAssetPath(guids[0]));
                 if (firstStyleSheet != null)
                 {
@@ -252,7 +253,7 @@ namespace EUFramework.Extension.MarkdownDocManagerKit.Editor
 
             // 2. 回退到默认路径
             var defaultStyleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(
-                "Assets/EUFramework/Extension/EUMarkdownDocManager/ConfigPanel/EUMarkdownDocReader.uss");
+                "Assets/EUFramework/Extension/EUMarkdownDocManager/Editor/EUMarkdownDocReader.uss");
             if (defaultStyleSheet != null)
             {
                 rootVisualElement.styleSheets.Add(defaultStyleSheet);

@@ -5,12 +5,12 @@ using Cysharp.Threading.Tasks;
 using YooAsset;
 using UnityEngine;
 
-namespace {{ namespace }}
+namespace EUFramework.Extension.EURes
 {
     /// <summary>
     /// 资源管理工具类 - 自动生成
     /// </summary>
-    public static partial class {{ class_name }}
+    public static partial class EUResKit
     {
         #region 私有字段
         
@@ -41,8 +41,6 @@ namespace {{ namespace }}
             // 配置用户交互回调
             SetupPatchOperationCallbacks(patchOperation, packageName);
             
-            // 必须启动操作，状态机才会运行（OnStart -> FsmInitializePackage）
-            YooAssets.StartOperation(patchOperation);
             await patchOperation;
 
             if (patchOperation.Status == EOperationStatus.Succeed)
@@ -51,7 +49,7 @@ namespace {{ namespace }}
             }
             else
             {
-                Debug.LogError($"[{{ class_name }}] Package '{packageName}' initialization failed! Error: {patchOperation.Error}");
+                Debug.LogError($"[EUResKit] Package '{packageName}' initialization failed! Error: {patchOperation.Error}");
                 return false;
             }
         }
@@ -72,7 +70,7 @@ namespace {{ namespace }}
             {
                 if (string.IsNullOrEmpty(_defaultPackageName))
                 {
-                    Debug.LogError($"[{{ class_name }}] Default package is not set!");
+                    Debug.LogError($"[EUResKit] Default package is not set!");
                     return null;
                 }
                 packageName = _defaultPackageName;
@@ -82,7 +80,7 @@ namespace {{ namespace }}
             var package = YooAssets.TryGetPackage(packageName);
             if (package == null)
             {
-                Debug.LogError($"[{{ class_name }}] Package '{packageName}' not found! Please call InitPackageResAsync first.");
+                Debug.LogError($"[EUResKit] Package '{packageName}' not found! Please call InitPackageResAsync first.");
             }
             
             return package;
@@ -102,7 +100,7 @@ namespace {{ namespace }}
             }
             else
             {
-                Debug.LogError($"[{{ class_name }}] Package '{packageName}' not found!");
+                Debug.LogError($"[EUResKit] Package '{packageName}' not found!");
             }
         }
 

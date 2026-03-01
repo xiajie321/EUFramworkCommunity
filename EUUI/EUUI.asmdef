@@ -1,8 +1,14 @@
-﻿{
+{
     "name": "EUUI",
     "rootNamespace": "EUFramework.Extension.EUUI",
     "references": [
         "UniTask"
+    ,
+        "EURes"
+    ,
+        "YooAsset"
+    ,
+        "Unity.RenderPipelines.Universal.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

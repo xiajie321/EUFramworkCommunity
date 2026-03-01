@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEditor.ShortcutManagement;
 using UnityEngine;
 using UnityEngine.UI;
 using EUFramework.Extension.EUUI;
@@ -106,11 +107,26 @@ namespace EUFramework.Extension.EUUI.Editor
             CreateSubLayer(canvasGO.transform, nameUIRoot);
             CreateSubLayer(canvasGO.transform, nameExcludedTop);
 
-            // 4. EventSystem
-            GameObject eventSystem = new GameObject("EventSystem",
-                typeof(UnityEngine.EventSystems.EventSystem),
-                typeof(UnityEngine.EventSystems.StandaloneInputModule));
+            // 4. EventSystem（自动适配 Input System / Input Module）
+            GameObject eventSystem = new GameObject("EventSystem");
+            eventSystem.AddComponent<UnityEngine.EventSystems.EventSystem>();
             eventSystem.transform.SetParent(uiRoot.transform);
+
+            bool hasInputSystem = false;
+            try
+            {
+                var inputSystemType = System.Type.GetType(
+                    "UnityEngine.InputSystem.UI.InputSystemUIInputModule, Unity.InputSystem");
+                if (inputSystemType != null)
+                {
+                    eventSystem.AddComponent(inputSystemType);
+                    hasInputSystem = true;
+                }
+            }
+            catch (System.Exception) { }
+
+            if (!hasInputSystem)
+                eventSystem.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
 
             if (EditorSceneManager.SaveScene(newScene, scenePath))
             {
@@ -132,7 +148,8 @@ namespace EUFramework.Extension.EUUI.Editor
             rt.anchoredPosition = Vector2.zero;
         }
 
-        // [MenuItem("EUFramework/拓展/EUUI/创建 UI 场景 &u", false, 102)]
+        [EUHotboxEntry("创建 UI 场景", "UI 制作", "弹出场景名称输入窗口，创建标准 UI 场景结构")]
+        [Shortcut("EUUI/创建 UI 场景", KeyCode.U, ShortcutModifiers.Alt)]
         public static void ShowCreateSceneWindow()
         {
             EUUISceneCreateWindow.ShowWindow((name, template) => ExecuteCreateUIScene(name, template));
@@ -141,6 +158,7 @@ namespace EUFramework.Extension.EUUI.Editor
         /// <summary>
         /// 定位到当前场景的 UIRoot 节点（聚焦并展开 Hierarchy）
         /// </summary>
+        [EUHotboxEntry("定位 UIRoot", "UI 制作", "在 Hierarchy 中定位并展开 UIRoot 节点")]
         // [MenuItem("EUFramework/拓展/EUUI/定位 UIRoot &f", false, 103)]
         public static void LocateUIRoot()
         {

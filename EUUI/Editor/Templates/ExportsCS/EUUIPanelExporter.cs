@@ -145,6 +145,7 @@ namespace EUFramework.Extension.EUUI.Editor.Templates
         /// <summary>
         /// 导出当前场景的 UIRoot 为 Prefab：保存到配置路径，并移除 Prefab 内的 EUUINodeBind 组件
         /// </summary>
+        [EUHotboxEntry("导出 Prefab", "UI 制作", "将当前场景的 UIRoot 导出为干净的 Prefab")]
         // [MenuItem("EUFramework/拓展/EUUI/导出 Prefab", false, 105)]
         public static void ExportCurrentPanelToPrefab()
         {
@@ -193,6 +194,7 @@ namespace EUFramework.Extension.EUUI.Editor.Templates
         /// <summary>
         /// 开始自动绑定流程：校验命名 → 生成 Generated/逻辑代码 → 刷新后编译，编译完成后自动执行绑定并导出 Prefab
         /// </summary>
+        [EUHotboxEntry("自动绑定导出", "UI 制作", "代码生成 + 字段绑定 + 导出 Prefab 完整自动流程")]
         // [MenuItem("EUFramework/拓展/EUUI/自动绑定并导出 Prefab", false, 106)]
         public static void StartExportProcess()
         {
@@ -315,7 +317,8 @@ namespace EUFramework.Extension.EUUI.Editor.Templates
                     is_gen = true,
                     namespace_name = ns,
                     class_name = className,
-                    members = members
+                    members = members,
+                    package_type = desc.PackageType.ToString()
                 });
                 EnsureDirectory(bindDir);
                 string genPath = Path.Combine(bindDir, className + ".Generated.cs").Replace("\\", "/");
@@ -427,9 +430,8 @@ namespace EUFramework.Extension.EUUI.Editor.Templates
             EnsureDirectory(folderPath);
             string prefabPath = $"{folderPath}/{panelName}.prefab".Replace("\\", "/");
 
-            PrefabUtility.SaveAsPrefabAsset(exportRoot, prefabPath);
-
-            if (AssetDatabase.LoadMainAssetAtPath(prefabPath) == null)
+            GameObject savedRoot = PrefabUtility.SaveAsPrefabAsset(exportRoot, prefabPath);
+            if (savedRoot == null)
             {
                 Debug.LogError($"[EUUI] Prefab 保存失败（路径: {prefabPath}）。若控制台提示「缺失脚本」，请先移除 UIRoot 上的缺失组件、确保生成脚本已编译，再重新执行「自动绑定并导出 Prefab」。");
                 return;

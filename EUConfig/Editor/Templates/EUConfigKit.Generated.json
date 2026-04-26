@@ -1,0 +1,10 @@
+{
+    "outputDirectory": "Assets/Script/HotUpdate/Generate/Kit",
+    "namespaceVariables": [
+        { "key": "eu_config_namespace", "value": "EUConfig" },
+        { "key": "eu_res_namespace", "value": "EURes" }
+    ],
+    "stringVariables": [
+        { "key": "config_address", "value": "Assets/EUResources/Remote/Config" }
+    ]
+}

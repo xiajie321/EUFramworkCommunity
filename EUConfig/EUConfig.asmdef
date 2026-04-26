@@ -1,0 +1,18 @@
+{
+    "name": "EUConfig",
+    "rootNamespace": "EUFramework.Extension.EUConfig",
+    "references": [
+        "Luban.Runtime",
+        "EURes",
+        "YooAsset"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

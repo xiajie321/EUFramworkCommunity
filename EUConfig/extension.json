@@ -1,0 +1,8 @@
+{
+  "name": "com.eu.euconfig",
+  "displayName": "EU Luban配表管理",
+  "version": "1.0.0",
+  "description": "处理LubanTable类的生成",
+  "author": "Cai_JH",
+  "category": "工具"
+}

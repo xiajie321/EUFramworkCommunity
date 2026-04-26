@@ -1,0 +1,20 @@
+{
+    "name": "EUConfig.Editor",
+    "rootNamespace": "EUFramework.Extension.EUConfig.Editor",
+    "references": [
+        "EUConfig"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [
+        "Scriban.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
